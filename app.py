@@ -3,8 +3,9 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 import plotly.graph_objects as go
-from datetime import timedelta
+from datetime import timedelta, datetime
 import warnings
+import requests
 warnings.filterwarnings('ignore')
 
 st.set_page_config(
@@ -60,6 +61,54 @@ def get_auto_calendar(target_date):
     is_harvest = 1 if bulan in [3, 4, 7, 8] else 0
     is_big = 1 if bulan in [1, 2, 3, 4, 12] else 0
     return is_harvest, is_big
+
+# ========================================================
+# FITUR BARU: MASTER DICTIONARY & FUNGSI TARIK API
+# ========================================================
+master_wilayah = {
+    "Jakarta":    {"hulu": "Kab. Karawang",     "lat": -6.3227, "lon": 107.3376, "prov_id": 13, "reg_id": 34},
+    "Yogyakarta": {"hulu": "Kab. Bantul",       "lat": -7.8860, "lon": 110.3318, "prov_id": 15, "reg_id": 41},
+    "Surabaya":   {"hulu": "Kab. Lamongan",     "lat": -7.1182, "lon": 112.3155, "prov_id": 16, "reg_id": 42},
+    "Malang":     {"hulu": "Kab. Malang",       "lat": -8.1333, "lon": 112.5667, "prov_id": 16, "reg_id": 43},
+    "Medan":      {"hulu": "Kab. Deli Serdang", "lat": 3.4285,  "lon": 98.8302,  "prov_id": 2,  "reg_id": 4},
+    "Makassar":   {"hulu": "Kab. Sidrap",       "lat": -3.9397, "lon": 119.8138, "prov_id": 26, "reg_id": 67},
+    "Pontianak":  {"hulu": "Kab. Sambas",       "lat": 1.3639,  "lon": 109.3134, "prov_id": 20, "reg_id": 57}
+}
+
+def tarik_data_live(kota_pilihan):
+    hari_ini = datetime.now()
+    start_date = (hari_ini - timedelta(days=10)).strftime("%Y-%m-%d")
+    end_date = hari_ini.strftime("%Y-%m-%d")
+    
+    lat, lon = master_wilayah[kota_pilihan]["lat"], master_wilayah[kota_pilihan]["lon"]
+    prov_id, reg_id = master_wilayah[kota_pilihan]["prov_id"], master_wilayah[kota_pilihan]["reg_id"]
+    hulu = master_wilayah[kota_pilihan]["hulu"]
+    
+    # A. TARIK CUACA OPEN-METEO
+    url_meteo = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=precipitation_sum&timezone=Asia%2FJakarta&forecast_days=8"
+    try:
+        resp_cuaca = requests.get(url_meteo, timeout=10).json()
+        hasil_cuaca = [f"{val} mm" for val in resp_cuaca['daily']['precipitation_sum'][1:8]]
+    except:
+        hasil_cuaca = ["Error"] * 7
+        
+    # B. TARIK HARGA PIHPS
+    url_harga = f"https://www.bi.go.id/hargapangan/WebSite/TabelHarga/GetGridDataDaerah?price_type_id=1&comcat_id=com_3&province_id={prov_id}&regency_id={reg_id}&market_id=&tipe_laporan=1&start_date={start_date}&end_date={end_date}"
+    headers = {'User-Agent': 'Mozilla/5.0', 'X-Requested-With': 'XMLHttpRequest'}
+    
+    try:
+        resp_harga = requests.get(url_harga, headers=headers, timeout=15).json()
+        target_data = next((item for item in resp_harga.get('data', []) if item.get('name') == 'Beras Kualitas Medium I'), None)
+        if target_data:
+            list_tgl = [k for k in target_data.keys() if '/' in k][-4:] # Ambil 4 tanggal kerja terakhir
+            hasil_harga = [f"Rp {target_data[tgl]}" for tgl in list_tgl]
+        else:
+            list_tgl, hasil_harga = ["H-3", "H-2", "H-1", "H"], ["Data Kosong"] * 4
+    except:
+        list_tgl, hasil_harga = ["H-3", "H-2", "H-1", "H"], ["Error Server"] * 4
+        
+    return hasil_harga, hasil_cuaca, hulu, list_tgl
+# ========================================================
 
 # branding sidebar
 st.sidebar.markdown(f"""
@@ -136,7 +185,12 @@ if menu == "🏠 Home":
     with col_bawah1:
         st.markdown("#### 🗓️ Filter Tanggal")
         start_date = st.date_input("Start Date", pd.to_datetime("2025-01-01"))
-        end_date = st.date_input("End Date", pd.to_datetime("2025-01-07"))
+        
+        # UX Improvement: Mengunci kalender End Date agar tidak bisa mundur dari Start Date
+        # Nilai default (value) dibuat dinamis menjadi Start Date + 6 hari
+        default_end = start_date + timedelta(days=6)
+        end_date = st.date_input("End Date", value=default_end, min_value=start_date)
+        
         btn_tampil = st.button("🔍 Tampilkan Data", use_container_width=True)
         
     with col_bawah2:
@@ -259,15 +313,60 @@ elif menu == "🚨 Early Warning System":
         kota_prediksi = st.selectbox("📍 Pilih Kota:", daftar_kota)
         model = load_xgb_model(kota_prediksi)
     with col_in2:
-        start_date = st.date_input("🗓️ Tanggal Mulai (Hari Ini):", pd.to_datetime("today"))
+        # Menyimpan variabel waktu untuk perhitungan model di bawah (tidak terlihat di UI)
+        start_date = pd.to_datetime("today")
+        
+        # Mengubah format tanggal menjadi string yang cantik (contoh: 14 Jun 2026)
+        hari_ini_str = start_date.strftime("%d %b %Y")
+        
+        # Membuat label
+        st.markdown("<p style='font-size: 14px; margin-bottom: 5px;'>🗓️ Tanggal Mulai (Hari Ini):</p>", unsafe_allow_html=True)
+        
+        # Membuat kotak indikator yang mirip form input, tapi tidak bisa diklik
+        st.markdown(f"""
+            <div style="
+                padding: 8px 14px; 
+                border: 1px solid #dcdcdc; 
+                border-radius: 8px; 
+                background-color: #f9f9f9; 
+                color: #333; 
+                font-size: 14px;
+                cursor: not-allowed;
+            ">
+                {hari_ini_str}
+            </div>
+        """, unsafe_allow_html=True)
     
     if model is None:
         st.error(f"❌ Model untuk {kota_prediksi} belum tersedia!")
         st.stop()
+    
+    # ========================================================
+    # FITUR BARU: UI TARIK DATA REFERENSI LIVE
+    # ========================================================
+    with st.expander(f"📡 Tarik Data Referensi API Live untuk {kota_prediksi} (Klik di sini)"):
+        st.write("Gunakan fitur ini untuk menarik data historis harga dari server PIHPS dan prakiraan cuaca satelit dari wilayah sentra produksi sebagai acuan pengisian model XGBoost.")
         
+        if st.button(f"🔄 Tarik Data Live {kota_prediksi}", type="secondary"):
+            with st.spinner(f"Menghubungkan ke satelit meteorologi dan database pemerintah..."):
+                # list_tgl tetap ditarik dari fungsi, tapi kita abaikan untuk tampilan UI
+                hasil_harga, hasil_cuaca, nama_hulu, list_tgl = tarik_data_live(kota_prediksi)
+                st.success("✅ Berhasil menarik data terkini!")
+                
+                # 1. Tabel Harga (Format Sinkron dengan Input Form)
+                st.markdown(f"**📊 Harga Beras Kualitas Medium I ({kota_prediksi}) - 4 Hari Kerja Terakhir**")
+                df_harga = pd.DataFrame([hasil_harga], columns=["H-3", "H-2", "H-1", "Hari Ini (H)"], index=["Harga"])
+                st.dataframe(df_harga, use_container_width=True)
+                
+                # 2. Tabel Cuaca (Format Sinkron dengan Input Form)
+                st.markdown(f"**🌦️ Prakiraan Curah Hujan di Wilayah Hulu ({nama_hulu}) - 7 Hari ke Depan**")
+                df_cuaca = pd.DataFrame([hasil_cuaca], columns=["H+1", "H+2", "H+3", "H+4", "H+5", "H+6", "H+7"], index=["Curah Hujan"])
+                st.dataframe(df_cuaca, use_container_width=True)
+    # ========================================================
+
+    #     
     st.markdown("### 💰 2. Input Harga Beras (3 Hari Terakhir)")
     st.info("🔎 **Sumber Data Harga:** Cek riwayat harga beras 3 hari terakhir melalui [Web PIHPS - Bank Indonesia](https://www.bi.go.id/hargapangan/TabelHarga/PasarTradisionalDaerah)")
-    st.info("⁉️ **Data Kosong:** Input Gunakan Harga Terakhir yang tertera pada data PIHPS")
     col_p1, col_p2, col_p3 = st.columns(3)
     with col_p1: h3_price = st.number_input(f"H-2 ({(start_date - timedelta(days=2)).strftime('%d %b')}):", value=0, help="Masukkan harga beras **2 Hari lalu** tanpa titik.")
     with col_p2: h2_price = st.number_input(f"H-1 ({(start_date - timedelta(days=1)).strftime('%d %b')}):", value=0, help="Masukkan harga beras **1 Hari lalu** tanpa titik.")
