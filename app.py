@@ -5,8 +5,15 @@ import xgboost as xgb
 import plotly.graph_objects as go
 from datetime import timedelta, datetime
 import warnings
+import base64
+
+def get_image_base64(image_path):
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+    
 import requests
 warnings.filterwarnings('ignore')
+
 
 st.set_page_config(
     page_title="RiceCast Alert | Early Warning System",
@@ -223,9 +230,12 @@ elif menu == "ℹ️ About":
         col_ab1, col_ab2 = st.columns([2, 1], gap="large")
         
         with col_ab1:
+            logo_untar = get_image_base64("logo_fti.png")
             st.markdown(f"""
                 <div class="about-card">
                     <p class="rancangan-text">RANCANGAN</p>
+                    <br>
+                    <img src="data:image/png;base64,{logo_untar}" style="height: 60px; margin-bottom: 10px;">
                     <br>
                     <br>
                     <p class="judul-skripsi">PERANCANGAN SISTEM PREDIKSI HARGA BERAS KUALITAS MEDIUM MENGGUNAKAN XGBOOST BERBASIS PREPROCESSING INTERPOLASI SPLINE</p>
